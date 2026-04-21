@@ -260,23 +260,23 @@ def _build_body(c):
     if c["type"] == "methodology_violation":
         lines = []
         if c.get("artifact_quote"):
-            lines.append(f"Cmd+F для поиска: «{c['artifact_quote']}»")
+            lines += ["*Cmd+F для поиска:*", f"«{c['artifact_quote']}»"]
         else:
-            lines.append(f"Место: {c.get('artifact_absence', 'раздел отсутствует')}")
+            lines += ["*Место:*", c.get("artifact_absence", "раздел отсутствует")]
         section = c.get("methodology_section", "")
-        header = f"Цитата из методички (раздел {section}):" if section else "Цитата из методички:"
+        header = f"*Цитата из методички (раздел {section}):*" if section else "*Цитата из методички:*"
         lines += ["", header, f"«{c['methodology_quote']}»"]
-        lines += ["", "Чего не хватает:", c["violation"]]
+        lines += ["", "*Чего не хватает:*", c["violation"]]
         return "\n".join(lines)
     if c["type"] == "citation_check":
-        lines = [f"Cmd+F для поиска: «{c['artifact_claim']}»", ""]
+        lines = ["*Cmd+F для поиска:*", f"«{c['artifact_claim']}»", ""]
         if c.get("source_url"):
-            lines.append(f"Источник: {c['source_url']}")
+            lines += ["*Источник:*", c["source_url"]]
         else:
-            lines.append("Источник не указан")
+            lines.append("*Источник не указан*")
         if c.get("source_quote"):
-            lines.append(f"Из источника: «{c['source_quote']}»")
-        lines += ["", "Проблема:", c["issue"]]
+            lines += ["", "*Из источника:*", f"«{c['source_quote']}»"]
+        lines += ["", "*Проблема:*", c["issue"]]
         return "\n".join(lines)
     raise ValueError(f"unknown comment type: {c['type']}")
 

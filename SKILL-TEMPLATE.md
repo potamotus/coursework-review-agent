@@ -1,86 +1,172 @@
 # Claude Code skill template
 
-Drop this into `~/.claude/skills/review/SKILL.md` (create the directory if needed). Adapt the path at the top to your local checkout.
+Drop this into `~/.claude/skills/review/SKILL.md` (create the directory if needed). Replace `<ABSOLUTE_PATH_TO_REVIEW_AGENT>` and `<YOUR_SA_EMAIL>` with your own values.
 
 ---
 
 ```markdown
 ---
 name: review
-description: Review a teammate's work on a coursework/project artifact against a methodology document. Produces compliance comments posted to Google Docs (objective, with verbatim methodology citations and source fact-checks) and/or a private subjective quality review saved to AI_reviews/. Use when the user asks to "review", "check", or "give feedback" on a task or when they ask what's ready for review.
+description: Review a teammate's Google Docs artifact against the user's methodology file, with mechanical string-match verification of every cited quote. Triggers on "review", "check", "проверить", "дать ревью", and variants.
 user-invokable: true
 ---
 
 # Review agent
 
-The user is a team lead reviewing teammates' work. Tasks are listed in a Google Sheets tab; each task has an artifact URL (Google Doc). This skill produces two kinds of review output:
+Tasks live in a Google Sheets tab; each task has an artifact URL (Google Doc).
 
-| Flow | Trigger | Output | Nature |
-|---|---|---|---|
-| **A. Methodology compliance + fact-check** | "review task N for methodology" | Comments posted to Google Doc | Objective, every finding backed by verbatim quote |
-| **B. Quality / subjective** | "quality review task N" | `AI_reviews/<date>_<slug>.md` | Free-form but artifact-quoted |
+| Flow | Trigger | Output |
+|---|---|---|
+| **A — Methodology + citation compliance** | "review", "check against methodology" | Comments posted to Google Doc |
+| **B — Quality / subjective** | "quality review", "style check" | `review_agent/AI_reviews/<YYYYMMDD>_<slug>.md` |
+
+**Flows are independent. Never mix B into A.**
 
 ## Location
-<adapt path>/review_agent/
+
+`<ABSOLUTE_PATH_TO_REVIEW_AGENT>/`
 
 ## CLI
-Always via venv:
+
 ```bash
-cd <path>/review_agent
+cd "<ABSOLUTE_PATH_TO_REVIEW_AGENT>"
 ./venv/bin/python review.py <command>
 ```
 
 | Command | Purpose |
 |---|---|
-| `pending` | List tasks with ready status |
-| `fetch <row>\|<url>` | JSON: task meta + artifact text + methodology path |
-| `post-comments <doc_id> <file.json>` | Post, with mechanical quote verification |
+| `pending` | List tasks with ready-status (config-driven) |
+| `fetch <row\|url>` | Task meta + full artifact text (tables included) + methodology path |
+| `post-comments <doc_id> <file.json>` | Post batch; CLI verifies every quote via string-match before posting |
 | `delete-comment <doc_id> <comment_id>` | Remove a comment |
-| `save-private <slug> <file.md>` | Save subjective review |
+| `save-private <slug> <file.md>` | Flow B output |
 
-## Anti-hallucination protocol (CRITICAL)
+---
 
-The system has a string-match barrier. **Every comment's quotes are verified verbatim** against methodology and doc content before posting. Unverified → REJECTED.
+## Core rule: **quote or drop**
 
-Your job: **only produce findings that can be backed by verbatim quotes**. If you can't find the exact text in the methodology to support your claim — don't make the claim.
+**Every public finding must be backed by verbatim quotes** — from methodology, artifact, or fetched source. The CLI mechanically verifies each quote (normalized-whitespace substring match) before posting. Unverified → `REJECTED`, not posted.
 
-## Flow A
+- **Methodology is always cited word-for-word.** No paraphrase, no summary, no approximation.
+- If you can't produce the exact text — **drop the finding**. Never edit a quote to force it through.
+- Barrier catches fabrication, not misinterpretation.
 
-1. Run `pending` or `fetch <row>` — get task, artifact text, methodology path
-2. Read the WHOLE methodology via `Read` tool (full coverage required)
-3. For each potential issue, classify:
-   - **`methodology_violation`**: artifact misses/violates a methodology requirement
-   - **`citation_check`**: with verdict `source_contradicts | source_absent_of_claim | source_unreachable | missing_citation`
-4. For `citation_check` verifying a source: **actually fetch it** via WebFetch or firecrawl and quote verbatim. If fetch fails → `source_unreachable`, don't fabricate.
-5. Write candidates JSON to `/tmp/review_candidates_<task>.json`:
+---
+
+## Flow A pipeline
+
+**1. Load everything.**
+- `fetch <row|url>` → task + full artifact text (tables marked `[TABLE]..[/TABLE]`).
+- `Read` the methodology file **in full**. No skimming, no partial reads.
+
+**2. Systematic comparison, section by section.**
+- Walk the methodology in order. For every prescriptive element — check the artifact.
+- Use only text present in the files. Don't project expected requirements.
+
+**3. Fact-check every citation.**
+- For each citation in the artifact, fetch the source URL via `WebFetch` or `firecrawl-scrape`.
+- Locate verbatim text that supports or contradicts the specific claim.
+- Reachable, claim present: no finding.
+- Reachable, claim not there: verdict `source_absent_of_claim`, `source_quote` = verbatim closest content.
+- Reachable, claim contradicted: verdict `source_contradicts`, `source_quote` = verbatim contradicting text.
+- Unreachable (paywall / 404 / bot block): verdict `source_unreachable`, `source_url` set, `source_quote: null`. Never fabricate.
+- Factual claim with no citation that clearly needs one: verdict `missing_citation`, both `source_url` and `source_quote` = null.
+
+**4. Build candidates JSON** (schema below).
+
+**5. Show list to user for approval.** For each finding emit one line: `type` + `methodology_section`/`verdict` + a ≤10-word restatement of `violation`/`issue`. Not the full JSON. Wait for explicit yes.
+
+**6. Post.** `post-comments <doc_id> <file>`. On `REJECTED` — fix the quote or drop the finding. Never paraphrase to get past the check.
+
+**7. Remind user to audit.** Open the comments panel, skim the posted comments before relying.
+
+## Flow B pipeline
+
+Free-form markdown. Every concern that references specific artifact text **must include a verbatim blockquote** of that text. `save-private <slug> <path>`.
+
+---
+
+## JSON schema
 
 ```json
 [
   {
     "type": "methodology_violation",
-    "methodology_quote": "verbatim from methodology, exactly",
-    "methodology_section": "2.4 (optional)",
-    "artifact_quote": "verbatim from artifact (or null if absence)",
-    "artifact_absence": "short description (or null if quote present)",
-    "violation": "- bullet 1\n- bullet 2"
+    "methodology_quote": "verbatim from methodology file",
+    "methodology_section": "section label",
+    "artifact_quote": "verbatim from artifact (present-and-wrong case)",
+    "artifact_absence": "short description of what's missing (absence case)",
+    "violation": "- bullet\n- bullet"
+  },
+  {
+    "type": "citation_check",
+    "verdict": "source_contradicts | source_absent_of_claim | source_unreachable | missing_citation",
+    "artifact_claim": "verbatim claim from artifact",
+    "source_url": "https://... or null",
+    "source_quote": "verbatim from source or null",
+    "issue": "- bullet"
   }
 ]
 ```
 
-6. **Show candidates to user, get approval.** Never post without confirmation.
-7. On approval: `post-comments <doc_id> <file.json>`. If any REJECTED, show the reason (quote not found verbatim) and iterate.
+**Quote rules:**
+- Copy exactly. Don't fix typos, normalize quotes, or clean OCR glitches — match the file as-is.
+- Whitespace normalized by verifier; **content must match byte-for-byte**.
+- Shortest self-contained anchor.
+- `citation_check` with verdict `source_contradicts` or `source_absent_of_claim` **requires** `source_quote` (verbatim from fetched page). `source_unreachable` and `missing_citation` → `source_quote: null`.
 
-## Flow B
+---
 
-Free-form subjective analysis in markdown. Structure: concerns with verbatim blockquotes from artifact. Save via `save-private`.
+## Posted comment — hard rules
 
-## Strict comment formatting rules
+- **No emojis. Anywhere.** Not in JSON fields, not in body, not in `violation` / `issue`. No exceptions.
+- **`violation` / `issue` = bullet list.** Each line starts with `- `, joined by `\n`. Concise; many short bullets beat one long sentence.
+- **Body is assembled by CLI.** You fill slots — it emits these fixed structures:
 
-- **NO emojis.** Ever. In comment body, in violation text, in issue text.
-- **`violation` / `issue` fields: bullet points** (each line starts with `- `).
-- Comment body built automatically as: `Cmd+F...` → methodology quote → bulleted gaps.
+Headers wrapped in `*…*` (Google Docs Slack-style bold in comments). Each header on its own line; value on the next line.
 
-## Known limitation: Google Docs comment anchoring
+`methodology_violation`:
+```
+*Cmd+F для поиска:*
+«<artifact_quote>»
 
-Drive API `anchor` and `quotedFileContent` are saved but ignored by Google Docs UI (documented Google-side limitation). Comments show in the panel, not as side-bubbles. We don't send them — the Cmd+F hint in the body is the reader's jump-to mechanism.
+*Цитата из методички (раздел <section>):*
+«<methodology_quote>»
+
+*Чего не хватает:*
+<violation bullets, as written>
+```
+
+`citation_check`:
+```
+*Cmd+F для поиска:*
+«<artifact_claim>»
+
+*Источник:*
+<source_url>
+(or standalone line "*Источник не указан*" if null)
+
+*Из источника:*
+«<source_quote>»
+(block omitted if null)
+
+*Проблема:*
+<issue bullets, as written>
+```
+
+Don't restructure. Only the labels are bold — values and bullet text stay plain.
+
+---
+
+## Operational
+
+- **Do not add `anchor` or `quotedFileContent` fields.** CLI ignores them; reader uses the Cmd+F hint in the body.
+- **SA identity.** Comments sign as `<YOUR_SA_EMAIL>`. Mention once per session if relevant.
+- **Access errors.** `fetch` returns 403 → user needs to share the artifact with SA as Commenter.
+
+## Paths
+
+- Methodology: `review_agent/methodology/methodology.md`
+- Private reviews: `review_agent/AI_reviews/`
+- Log: `review_agent/reviews_log.jsonl`
 ```
