@@ -1,0 +1,17 @@
+key.json
+*.key.json
+.env
+venv/
+__pycache__/
+*.pyc
+AI_reviews/
+reviews_log.jsonl
+.DS_Store
+
+# Methodology content is the user's own — typically copyrighted (HSE, university PDF).
+# Each user provides their own local copy.
+methodology/*.md
+methodology/*.pdf
+methodology/*.txt
+methodology/*.docx
+!methodology/README.md
